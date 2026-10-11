@@ -1,0 +1,5 @@
+# Included from ~/.gitconfig: git config --global include.path ~/.config/git/aliases
+# Add aliases here, or with: git config --file ~/.config/git/aliases alias.<name> '<command>'
+[alias]
+	tree = log --graph --decorate --pretty=oneline --abbrev-commit
+	pushf = !git push --force-with-lease origin HEAD

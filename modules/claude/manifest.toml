@@ -1,0 +1,4 @@
+# Global Claude Code configuration. Runtime state, history, caches and credentials stay out.
+target = "${CLAUDE_CONFIG_DIR:-~/.claude}"
+include = ["CLAUDE.md", "settings.json", "skills/**", "custom/**"]
+exclude = ["skills/synced/**", "skills/.trash/**", "**/*.zip"]
