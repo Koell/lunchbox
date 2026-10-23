@@ -1,0 +1,14 @@
+# What bento manages. The files themselves live in the bento (see README), never in the repository.
+# Nothing outside these patterns is ever read or written, so runtime state, history, caches and
+# credentials stay out.
+
+# Global Claude Code configuration.
+[modules.claude]
+target = "${CLAUDE_CONFIG_DIR:-~/.claude}"
+include = ["CLAUDE.md", "settings.json", "skills/**", "custom/**"]
+exclude = ["skills/synced/**", "skills/.trash/**", "**/*.zip"]
+
+# Shared git aliases and global ignore rules. ~/.gitconfig, with identity and credentials, stays out.
+[modules.git]
+target = "${XDG_CONFIG_HOME:-~/.config}/git"
+include = ["aliases", "ignore"]

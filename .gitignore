@@ -221,3 +221,8 @@ __marimo__/
 
 .ai
 .idea
+
+# The bento with the actual configuration: private, never committed (see README).
+/backup/bento/export/
+# Per-machine GUI state, such as the last opened bento.
+/backup/bento/local/

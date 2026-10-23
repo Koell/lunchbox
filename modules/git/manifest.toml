@@ -1,3 +1,0 @@
-# Shared git aliases and global ignore rules. ~/.gitconfig, with identity and credentials, stays out.
-target = "${XDG_CONFIG_HOME:-~/.config}/git"
-include = ["aliases", "ignore"]

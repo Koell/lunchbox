@@ -1,0 +1,199 @@
+name: bento
+
+on:
+  push:
+    paths:
+      - "backup/bento/**"
+      - ".github/workflows/bento.yml"
+  pull_request:
+    paths:
+      - "backup/bento/**"
+      - ".github/workflows/bento.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backup/bento
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Safety net: every later step sees CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME and
+      # GIT_CONFIG_GLOBAL pointing into the runner's temp directory, so nothing
+      # can ever touch a real ~/.claude, ~/.config/git or ~/.gitconfig. The smoke
+      # steps override them with their own fresh paths.
+      - name: Point module targets at temp directories
+        shell: bash
+        run: |
+          echo "CLAUDE_CONFIG_DIR=$RUNNER_TEMP/claude-config" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg-config" >> "$GITHUB_ENV"
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig" >> "$GITHUB_ENV"
+
+      # The GUI smoke tests need a display: Windows and macOS runners have one, Linux gets a
+      # virtual one. BENTO_GUI_TESTS=required turns a missing display into a failure, not a skip.
+      - name: Install a virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Unit tests
+        shell: bash
+        env:
+          BENTO_GUI_TESTS: required
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a python -m unittest -v
+          else
+            python -m unittest -v
+          fi
+
+      # Runs on all three OSes: native bash on Linux/macOS, Git Bash on Windows.
+      # Captures the fixture machine (bento/tests/fixtures/machine) into a fresh bento, then
+      # deploys that bento into fresh targets.
+      - name: Smoke test (python -m bento, setup-git.sh)
+        shell: bash
+        env:
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-sh
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xdg-sh
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig-sh
+        run: |
+          fixture="$(pwd)/bento/tests/fixtures/machine"
+          temp="$RUNNER_TEMP"
+          target="$CLAUDE_CONFIG_DIR"
+          xdg="$XDG_CONFIG_HOME"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            fixture="$(cygpath -w "$fixture")"
+            temp="$(cygpath -u "$temp")"
+            target="$(cygpath -u "$target")"
+            xdg="$(cygpath -u "$xdg")"
+          fi
+          bento="$temp/bento-sh/bento.tar.gz"
+          for d in "$target" "$xdg" "$temp/bento-sh"; do
+            if [ -e "$d" ]; then echo "::error::$d already exists"; exit 1; fi
+          done
+
+          # Capture from the fixture machine; the targets of this step stay untouched.
+          capture() {
+            CLAUDE_CONFIG_DIR="$fixture/claude" XDG_CONFIG_HOME="$fixture/xdg" \
+              python -m bento capture "$@"
+          }
+
+          capture --bento "$bento" || exit 1
+          if [ ! -f "$bento" ]; then echo "::error::capture did not write $bento"; exit 1; fi
+
+          python -m bento status --bento "$bento"
+          python -m bento deploy --bento "$bento"
+
+          for f in CLAUDE.md settings.json custom/statusline.sh skills/demo/SKILL.md; do
+            if [ ! -f "$target/$f" ]; then echo "::error::$f was not deployed"; exit 1; fi
+          done
+          for f in history.jsonl skills/synced/remote/SKILL.md; do
+            if [ -e "$target/$f" ]; then echo "::error::unmanaged $f was deployed"; exit 1; fi
+          done
+          for f in aliases ignore; do
+            if [ ! -f "$xdg/git/$f" ]; then echo "::error::git/$f was not deployed"; exit 1; fi
+          done
+          # The aliases file must stay valid git config.
+          git config --file "$xdg/git/aliases" --get alias.tree >/dev/null
+
+          bash setup-git.sh
+          bash setup-git.sh
+          if [ "$(git config --global --get-all include.path | wc -l)" -ne 1 ]; then
+            echo "::error::setup-git did not add exactly one include.path"; exit 1
+          fi
+          if ! git config --global --includes --get alias.tree >/dev/null; then
+            echo "::error::alias.tree does not resolve through the include"; exit 1
+          fi
+          # Git Bash has no real executable bit, so only check it on POSIX.
+          if [ "$RUNNER_OS" != "Windows" ] && [ ! -x "$target/custom/statusline.sh" ]; then
+            echo "::error::custom/statusline.sh is not executable"; exit 1
+          fi
+
+          out="$(python -m bento deploy --bento "$bento")"
+          printf '%s\n' "$out"
+          if printf '%s\n' "$out" | grep -Eq '^[[:space:]]+(added|updated)[[:space:]]'; then
+            echo "::error::second deploy changed files"; exit 1
+          fi
+
+          out="$(capture --bento "$bento")"
+          printf '%s\n' "$out"
+          if ! printf '%s\n' "$out" | grep -q '^bento unchanged$'; then
+            echo "::error::second capture rewrote the bento"; exit 1
+          fi
+          if [ "$(ls -A "$temp/bento-sh")" != "bento.tar.gz" ]; then
+            echo "::error::unexpected files next to the bento: $(ls -A "$temp/bento-sh")"; exit 1
+          fi
+
+          # A stored selection keeps a file out: capture drops it, and the next capture from a
+          # machine that still has it doesn't bring it back. Only the GUI edits the selection,
+          # so it is stored here through the library.
+          native="$bento"
+          if [ "$RUNNER_OS" = "Windows" ]; then native="$(cygpath -w "$bento")"; fi
+          python -c '
+          import sys
+          from pathlib import Path
+          from bento import archive, picks
+          path = Path(sys.argv[1])
+          old = archive.read(path)
+          keep_out = picks.Picks({"claude": picks.ModulePicks(("skills/demo/",))})
+          meta = picks.with_picks(old.meta, keep_out)
+          archive.write(path, archive.Bento(old.files, old.captured, meta=meta), old)
+          ' "$native"
+          for run in 1 2; do
+            out="$(capture --bento "$bento")"
+            printf '%s\n' "$out"
+            if tar -xzOf "$bento" contents.tar | tar -t | grep -q '^claude/skills/demo/'; then
+              echo "::error::capture $run kept or brought back an excluded file"; exit 1
+            fi
+          done
+          if ! printf '%s\n' "$out" | grep -q '^bento unchanged$'; then
+            echo "::error::capture after the selection rewrote the bento again"; exit 1
+          fi
+
+          python -m bento status --bento "$bento"
+
+      - name: Smoke test (setup-git.ps1, PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}\xdg-pwsh
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}\gitconfig-pwsh
+        run: &ps1-smoke |
+          # Run the script in a child process of the same PowerShell edition as
+          # this step, so both 5.1 and 7 are exercised.
+          $exe = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh' } else { 'powershell' }
+          Write-Host "PowerShell $($PSVersionTable.PSVersion) ($exe)"
+
+          if (Test-Path -LiteralPath $env:GIT_CONFIG_GLOBAL) { throw "$env:GIT_CONFIG_GLOBAL already exists" }
+
+          foreach ($run in 1, 2) {
+            & $exe -NoProfile -ExecutionPolicy Bypass -File .\setup-git.ps1
+            if ($LASTEXITCODE -ne 0) { throw "setup-git.ps1 exited with code $LASTEXITCODE" }
+          }
+          $paths = @(git config --global --get-all include.path)
+          if ($paths.Count -ne 1) { throw 'setup-git did not add exactly one include.path' }
+          $expected = (Join-Path $env:XDG_CONFIG_HOME 'git/aliases').Replace('\', '/')
+          if ($paths[0] -ne $expected) { throw "include.path is $($paths[0]), expected $expected" }
+
+      - name: Smoke test (setup-git.ps1, Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}\xdg-powershell
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}\gitconfig-powershell
+        run: *ps1-smoke
