@@ -15,9 +15,9 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Any
 
-from .. import archive, ops
+from .. import archive, ops, risk
 from ..archive import Bento
-from ..manifest import Module
+from ..manifest import Manifest, ManifestError, Module
 from . import dialogs, icon, model, theme
 from .state import State, initial_bento
 from .tree import FileTree
@@ -25,6 +25,7 @@ from .tree import FileTree
 AskPassphrase = Callable[[tk.Misc, Path, str | None], str | None]
 AskNewPassphrase = Callable[[tk.Misc, Path], str | None]
 Confirm = Callable[[tk.Misc, model.Confirmation], bool]
+LoadManifest = Callable[[], Manifest]
 Stamp = tuple[int, int] | None
 
 TITLE = "Backup, Encrypt 'n' Take Out"
@@ -51,27 +52,32 @@ class App:
     `contents` is the open bento once it has been read, `passphrase` the one it was opened with,
     `pending` the passphrase a first capture encrypts a new bento with. They are only ever kept
     in memory and are dropped when another bento is opened. `stamp` is the bento file as it was
-    when read; nothing is written over a bento that changed since.
+    when read; nothing is written over a bento that changed since. `modules` come from
+    `bento.toml`, read again on every Refresh; while it is broken (`manifest_error`), the last
+    good modules stay and Capture and Deploy wait.
     """
 
     def __init__(
         self,
         root: tk.Tk,
-        modules: Sequence[Module],
+        manifest: LoadManifest,
         requested: Path | None = None,
         *,
         state: State | None = None,
         ask_passphrase: AskPassphrase = dialogs.ask_passphrase,
         ask_new_passphrase: AskNewPassphrase = dialogs.ask_new_passphrase,
         confirm: Confirm = dialogs.confirm,
+        default: Path = archive.DEFAULT_PATH,
     ) -> None:
         self.root = root
-        self.modules = list(modules)
+        self.load_manifest = manifest
+        self.modules: list[Module] = []
+        self.manifest_error: str | None = None
         self.state = state or State()
         self.ask_passphrase = ask_passphrase
         self.ask_new_passphrase = ask_new_passphrase
         self.confirm = confirm
-        self.path: Path = archive.DEFAULT_PATH
+        self.path: Path = default
         self.contents: Bento | None = None
         self.passphrase: str | None = None
         self.pending: str | None = None
@@ -90,7 +96,8 @@ class App:
         self._after = root.after(_POLL_MS, self._poll)
         root.bind("<Destroy>", self._destroyed, add="+")
 
-        path, note = initial_bento(self.state, requested)
+        self._reload_manifest()
+        path, note = initial_bento(self.state, requested, default)
         self.open(path)
         if note:
             self.show(note)
@@ -109,11 +116,30 @@ class App:
         self._read(carry=False)
 
     def refresh(self) -> None:
-        """Read the bento and this machine again, keeping the passphrase and the ticks."""
+        """Read `bento.toml`, the bento and this machine again, keeping the passphrase and the
+        ticks."""
+        self._reload_manifest()
         if self.locked:
             self.unlock()
         else:
             self._read()
+
+    def _reload_manifest(self) -> None:
+        """Read `bento.toml` again; a broken one keeps the last good modules and holds the actions."""
+        try:
+            manifest = self.load_manifest()
+        except ManifestError as error:
+            self.manifest_error = str(error)
+            self.show(
+                f"Error: {error}. Capture and Deploy wait until bento.toml is fixed;"
+                " Refresh after saving it.",
+                error=True,
+            )
+        else:
+            self.modules, self.manifest_error = list(manifest.modules), None
+            for warning in manifest.warnings:
+                self.show(f"Warning: {warning}")
+        self._update_bar()
 
     def unlock(self) -> None:
         if self.locked:
@@ -171,10 +197,12 @@ class App:
             else f"captured {contents.captured.astimezone():%Y-%m-%d %H:%M}"
         )
         modules = contents.modules()
+        high_risk = risk.count(contents, self.modules)
         self._describe(
             f"{when}  ·  {'encrypted' if contents.encrypted else 'not encrypted'}"
             f"  ·  {model.count_text(len(modules), 'module')},"
             f" {model.count_text(len(contents.files), 'file')}"
+            + (f"  ·  {model.count_text(high_risk, 'high-risk file')}" if high_risk else "")
         )
         for warning in contents.warnings:
             self.show(f"Warning: {warning}")
@@ -229,7 +257,7 @@ class App:
     def run_deploy(self) -> None:
         """Write the ticked added and updated files onto this machine; overwriting asks first."""
         tree, contents, modules = self.deploy.tree, self.contents, self.modules
-        if tree is None or contents is None or self.busy:
+        if tree is None or contents is None or self.busy or self.manifest_error:
             return
         if not tree.total_changes():
             self.show("Nothing to deploy: every ticked file is already on this machine.")
@@ -267,7 +295,7 @@ class App:
         findings, or the encryption changes.
         """
         tree = self.capture.tree
-        if tree is None or self.busy:
+        if tree is None or self.busy or self.manifest_error:
             return
         path, previous, modules, stamp = self.path, self.contents, self.modules, self.stamp
         options = dict(
@@ -471,6 +499,7 @@ class App:
             button.configure(state="disabled" if busy else "normal")
         for tab in (self.capture, self.deploy):
             tab.set_busy(busy)
+            tab.set_blocked(self.manifest_error is not None)
 
     # Layout
 

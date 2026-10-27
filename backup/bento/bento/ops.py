@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import archive, guards, picks, sync
+from . import archive, guards, picks, risk, sync
 from .archive import Bento, BentoError
 from .manifest import Module
 from .picks import ModulePicks, Picks
@@ -36,7 +36,8 @@ ALL: Container[str] = _Everything()
 class DeployModule:
     """What deploy would do for one module.
 
-    `files` are the packed files the manifest manages, `machine` this machine's versions of them.
+    `files` are the packed files the manifest manages, `machine` this machine's versions of them,
+    `high_risk` why each high-risk file among them and the ignored ones is high-risk.
     """
 
     module: Module
@@ -44,6 +45,7 @@ class DeployModule:
     files: Mapping[str, bytes]
     ignored: tuple[str, ...] = ()
     machine: Mapping[str, bytes] = field(default_factory=dict)
+    high_risk: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -54,7 +56,7 @@ class CaptureModule:
     every guard finding, `allowed` the paths captured despite theirs. `excluded` are this machine's
     files the stored selection keeps out; `removed` are the bento entries capture drops. A
     `skipped` module (no target directory here) and a `refused` one (secrets in a plain bento)
-    leave the bento untouched.
+    leave the bento untouched. `high_risk` says why each high-risk file, here or in the bento, is.
     """
 
     module: Module
@@ -67,6 +69,7 @@ class CaptureModule:
     excluded: tuple[str, ...] = ()
     skipped: bool = False
     refused: bool = False
+    high_risk: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def refused_files(self) -> tuple[str, ...]:
@@ -134,13 +137,22 @@ def plan_deploy(contents: Bento, modules: Sequence[Module]) -> list[DeployModule
         managed, ignored = _split(module, contents, stored.module(module.name))
         machine = sync.read(module.target, managed)
         plan = sync.plan(managed, machine)
-        planned.append(DeployModule(module, plan, managed, tuple(ignored), machine))
+        packed = contents.module(module.name)
+        unmanaged = {path: packed[path] for path in ignored}
+        high_risk = risk.reasons(module, managed, machine, unmanaged)
+        planned.append(DeployModule(module, plan, managed, tuple(ignored), machine, high_risk))
     return planned
 
 
 def apply_deploy(planned: Sequence[DeployModule]) -> None:
-    """Write every module's added and updated files onto this machine; never deletes."""
+    """Write every module's added and updated files onto this machine; never deletes.
+
+    A missing target directory is created only for a module that has something to write, so a
+    module the bento holds nothing for leaves no empty folder behind.
+    """
     for item in planned:
+        if not item.plan.changes and not item.module.target.is_dir():
+            continue
         item.module.target.mkdir(parents=True, exist_ok=True)
         sync.apply(
             item.plan,
@@ -198,6 +210,7 @@ def capture_module(
         removed=tuple(sorted(dropped)),
         only_in_bento=tuple(sorted(only_in_bento - dropped)),
         excluded=excluded,
+        high_risk=risk.reasons(module, source, packed),
     )
 
 

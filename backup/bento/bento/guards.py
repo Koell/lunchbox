@@ -21,10 +21,20 @@ _SECRET_TOKENS = (
     re.compile(r"(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{40,}"),
     re.compile(r"(?<![A-Za-z0-9])AKIA[0-9A-Z]{16}(?![A-Za-z0-9])"),
 )
-_PEM = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")
+# PEM and OpenSSH private keys, and exported GPG secret keys ("PRIVATE KEY BLOCK").
+_PEM = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")
+# GnuPG's own key files: "Key: (protected-key ..." or the older "(21:protected-private-key...".
+_GNUPG_KEY = re.compile(r"\((?:\d+:)?(?:(?:protected|shadowed)-)?private-key|\((?:\d+:)?protected-key")
 _JSON_PAIR = re.compile(r'"(?P<key>[^"\n]+)"\s*:\s*"(?P<value>(?:[^"\\\n]|\\.)*)"')
 _TOML_PAIR = re.compile(r"""^\s*(?P<key>[\w.-]+|"[^"\n]+")\s*=\s*(?P<q>["'])(?P<value>.*?)(?P=q)""")
-_SECRET_KEY = re.compile(r"api[_-]?key|token|secret|passw(?:or)?d", re.I)
+# A whole line `key=value` or `key: value`, the value quoted or not, as in .properties, .env and
+# YAML files (list items too), or `export KEY=value` in a shell profile.
+_PLAIN_PAIR = re.compile(
+    r"""^\s*(?:(?:export|local|readonly)\s+|-\s+)?(?P<key>[A-Za-z_][\w.-]*)\s*[=:]\s*(?P<q>["']?)(?P<value>[^\s"']+)(?P=q)\s*(?:\#.*)?$"""
+)
+_SECRET_KEY = re.compile(
+    r"api[_-]?key|token|secret|passw(?:or)?d|key[_-]?data|private[_-]?key", re.I
+)
 # Values that are references, templates, paths, URLs or placeholders rather than literals.
 _NOT_LITERAL = re.compile(
     r"[\s$]|%\w+%|\{\{|^(?:~|\.{0,2}/|[a-z]:[\\/])|^<.*>$|^[a-z][a-z0-9+.-]*://[^@]*$", re.I
@@ -69,13 +79,20 @@ def scan_portability(
     return findings
 
 
+def holds_private_key(data: bytes) -> bool:
+    """Whether `data` contains a private key block or a GnuPG private key."""
+    text = data.decode("utf-8", errors="replace")
+    return bool(_PEM.search(text) or _GNUPG_KEY.search(text))
+
+
 def scan_secrets(relpath: str, data: bytes) -> list[Finding]:
     """Flag each line containing credential-like content, with the value masked."""
     findings = []
     for number, line in _lines(data):
         hits = [(m.start(), _mask(m.group())) for p in _SECRET_TOKENS for m in p.finditer(line)]
-        hits += [(m.start(), m.group()) for m in _PEM.finditer(line)]
-        for pair in (*_JSON_PAIR.finditer(line), *_TOML_PAIR.finditer(line)):
+        hits += [(m.start(), m.group()) for p in (_PEM, _GNUPG_KEY) for m in p.finditer(line)]
+        pairs = (*_JSON_PAIR.finditer(line), *_TOML_PAIR.finditer(line), *_PLAIN_PAIR.finditer(line))
+        for pair in pairs:
             key, value = pair["key"].strip('"'), pair["value"]
             if _SECRET_KEY.search(key) and _is_literal_secret(value):
                 hits.append((pair.start(), f"{key}: {_mask(value)}"))

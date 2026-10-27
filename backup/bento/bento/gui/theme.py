@@ -30,6 +30,7 @@ UPDATED = "#e5b45b"
 REMOVED = ERROR
 ON_ACCENT = "#ffffff"
 FINDING = "#4d3a1c"
+HIGH_RISK = "#c792ea"
 
 MUTED_LABEL = "Muted.TLabel"
 ERROR_LABEL = "Error.TLabel"

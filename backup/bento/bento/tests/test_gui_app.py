@@ -3,6 +3,7 @@
 With BENTO_GUI_TESTS=required, as in CI, they run anyway and fail instead of being skipped.
 """
 
+import gc
 import os
 import shutil
 import tempfile
@@ -14,7 +15,7 @@ from pathlib import Path
 from bento import archive, gpg
 from bento.archive import Bento
 from bento.gui.state import State
-from bento.manifest import Module
+from bento.manifest import Manifest, Module, read
 
 try:
     import tkinter
@@ -53,6 +54,7 @@ class AppTest(unittest.TestCase):
         self.dir = Path(tmp.name)
         self.path = self.dir / "export" / "bento.tar.gz"
         self.state = State(self.dir / "local" / "gui.json")
+        self.default = self.dir / "default" / "bento.tar.gz"
         # A copy of the fixture machine, so a deploy can never write into the repository.
         self.machine = self.dir / "machine"
         shutil.copytree(FIXTURE, self.machine)
@@ -62,12 +64,16 @@ class AppTest(unittest.TestCase):
         ]
         self.confirmations = []
         self.App = App
+        # Free this test's Tk objects on the main thread once it is done: collected later in a
+        # worker thread, they call into Tk from there, which can stall that worker on Windows.
+        self.addCleanup(gc.collect)
         self.root = tk.Tk()
         self.root.withdraw()
         self.addCleanup(self.root.destroy)
 
-    def app(self, requested=None, ask=None, *, agree=True, new_passphrase=None):
-        """The window; confirmations are recorded and answered with `agree`."""
+    def app(self, requested=None, ask=None, *, agree=True, new_passphrase=None, manifest=None):
+        """The window; confirmations are recorded and answered with `agree`. `manifest` reads
+        the modules, by default `self.modules`."""
 
         def confirm(parent, confirmation):
             self.confirmations.append(confirmation)
@@ -77,10 +83,13 @@ class AppTest(unittest.TestCase):
             "state": self.state,
             "confirm": confirm,
             "ask_new_passphrase": lambda parent, bento: new_passphrase,
+            # Never the real export/bento.tar.gz, which may exist and be encrypted.
+            "default": self.default,
         }
         if ask is not None:
             options["ask_passphrase"] = ask
-        return self.App(self.root, self.modules, requested, **options)
+        return self.App(self.root, manifest or (lambda: Manifest(list(self.modules))), requested,
+                        **options)
 
     def settle(self, app, timeout=20.0):
         """Run the event loop until the background work is done."""
@@ -105,6 +114,14 @@ class AppTest(unittest.TestCase):
         self.assertIn("2 modules, 2 files", app.info_var.get())
         self.assertEqual(dict(app.contents.files)["claude/CLAUDE.md"], b"rules")
         self.assertEqual(self.state.remembered(), self.path)
+
+    def test_the_bar_counts_high_risk_files(self):
+        key = b"-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n"
+        archive.write(self.path, Bento({"claude/CLAUDE.md": key, "git/aliases": b"x"}, T0))
+        app = self.app(self.path)
+        self.settle(app)
+        self.assertIn("1 high-risk file", app.info_var.get())
+        self.assertIn("high risk", app.deploy.view.item("claude/CLAUDE.md", "tags"))
 
     def test_the_window_is_dark(self):
         from tkinter import ttk
@@ -146,7 +163,7 @@ class AppTest(unittest.TestCase):
         self.state.remember(self.dir / "gone.tar.gz")
         app = self.app()
         self.settle(app)
-        self.assertEqual(app.path, archive.DEFAULT_PATH)
+        self.assertEqual(app.path, self.default)
         self.assertIn("gone.tar.gz", self.result_text(app))
 
     def test_a_damaged_bento_is_reported(self):
@@ -277,6 +294,19 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.confirmations, [])
         self.assertTrue((self.machine / "claude/skills/new/SKILL.md").is_file())
 
+    def test_deploying_a_key_asks_first(self):
+        key = b"-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n"
+        target = self.dir / "fresh-ssh"
+        target.mkdir()
+        self.modules.append(Module("ssh", target, ("*",), (), secrets=True, plain=("*.pub",)))
+        archive.write(self.path, Bento({"ssh/work": key, "ssh/work.pub": b"ssh-ed25519 A"}, T0))
+        app = self.app(self.path, agree=False)
+        self.settle(app)
+        app.run_deploy()
+        self.settle(app)
+        self.assertEqual(self.confirmations[0].sections, (("Secrets written to this machine", ("ssh/work",)),))
+        self.assertFalse((target / "work").exists())
+
     def test_deploy_stops_when_a_ticked_file_changed_meanwhile(self):
         archive.write(self.path, Bento({"claude/CLAUDE.md": b"bento rules"}, T0))
         app = self.app(self.path)
@@ -340,6 +370,57 @@ class AppTest(unittest.TestCase):
         self.assertEqual(sections["Captured despite guard findings"], (id,))
         self.assertIn(id, archive.read(self.path).files)
         self.assertEqual(app.capture.tree.allowed, set())
+
+    # The manifest
+
+    def manifest_file(self, text):
+        """`bento.toml` in the temporary folder, with `{machine}` standing for the fixture copy."""
+        path = self.dir / "bento.toml"
+        path.write_text(text.replace("{machine}", self.machine.as_posix()), encoding="utf-8")
+        return lambda: read(path, env={}, home=self.dir)
+
+    def test_refresh_reads_an_edited_manifest(self):
+        claude = '[modules.claude]\ntarget = "{machine}/claude"\ninclude = ["CLAUDE.md"]\n'
+        load = self.manifest_file(claude)
+        app = self.app(self.path, manifest=load)
+        self.settle(app)
+        self.assertEqual([m.name for m in app.modules], ["claude"])
+        self.manifest_file(claude + '[modules.git]\ntarget = "{machine}/xdg/git"\ninclude = ["aliases"]\n')
+        app.refresh()
+        self.settle(app)
+        self.assertEqual(app.capture.tree.roots, ["claude", "git"])
+
+    def test_warnings_show_on_each_read_until_fixed(self):
+        warned = '[modules.git]\ntarget = "{machine}/xdg/git"\ninclude = ["aliases"]\nplain = ["aliases"]\n'
+        load = self.manifest_file(warned)
+        app = self.app(self.path, manifest=load)
+        self.settle(app)
+        self.assertEqual(self.result_text(app).count("'plain' only applies"), 1)
+        self.manifest_file(warned.replace('plain = ["aliases"]\n', ""))
+        app.refresh()
+        self.settle(app)
+        self.assertEqual(self.result_text(app).count("'plain' only applies"), 1)
+
+    def test_a_broken_manifest_holds_the_actions_until_fixed(self):
+        good = '[modules.claude]\ntarget = "{machine}/claude"\ninclude = ["CLAUDE.md"]\n'
+        load = self.manifest_file(good)
+        app = self.app(self.path, manifest=load)
+        self.settle(app)
+        self.assertEqual(str(app.capture.action_button.cget("state")), "normal")
+        self.manifest_file(good + "[modules.broken\n")
+        app.refresh()
+        self.settle(app)
+        self.assertIn("invalid TOML", self.result_text(app))
+        self.assertEqual([m.name for m in app.modules], ["claude"])
+        self.assertEqual(str(app.capture.action_button.cget("state")), "disabled")
+        self.assertEqual(str(app.capture.refresh_button.cget("state")), "normal")
+        app.run_capture()
+        self.settle(app)
+        self.assertFalse(self.path.exists())
+        self.manifest_file(good)
+        app.refresh()
+        self.settle(app)
+        self.assertEqual(str(app.capture.action_button.cget("state")), "normal")
 
     # Encryption
 

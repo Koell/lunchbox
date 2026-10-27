@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bento.manifest import MANIFEST_PATH, ManifestError, load
+from bento.manifest import MANIFEST_PATH, ManifestError, load, read
 
 HOME = Path("/home/tester")
 
@@ -59,6 +59,30 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual([m.secrets for m in modules], [True, False])
         with self.assertRaisesRegex(ManifestError, "module 'm': 'secrets' must be true or false"):
             self.load('[modules.m]\ntarget = "~"\ninclude = ["*"]\nsecrets = "yes"\n')
+
+    def test_plain_in_a_secrets_module(self):
+        self.path.write_text(
+            '[modules.ssh]\ntarget = "~/.ssh"\ninclude = ["*"]\nsecrets = true\n'
+            'plain = ["config", "*.pub", "nothing-matches"]\n',
+            encoding="utf-8",
+        )
+        manifest = read(self.path, env={}, home=HOME)
+        self.assertEqual(manifest.modules[0].plain, ("config", "*.pub", "nothing-matches"))
+        self.assertEqual(manifest.warnings, [])
+
+    def test_plain_without_secrets_is_a_warning_and_ignored(self):
+        self.path.write_text(
+            '[modules.git]\ntarget = "~/g"\ninclude = ["*"]\nplain = ["aliases"]\n', encoding="utf-8"
+        )
+        manifest = read(self.path, env={}, home=HOME)
+        self.assertEqual(manifest.modules[0].plain, ())
+        self.assertEqual(
+            manifest.warnings, ["module 'git': 'plain' only applies with secrets = true; ignored"]
+        )
+
+    def test_plain_must_be_a_list_of_patterns(self):
+        with self.assertRaisesRegex(ManifestError, "module 'm': 'plain' must be a list"):
+            self.load('[modules.m]\ntarget = "~"\ninclude = ["*"]\nsecrets = true\nplain = "config"\n')
 
     def test_modules_keep_file_order(self):
         modules = self.load(
@@ -128,8 +152,26 @@ class ManifestTest(unittest.TestCase):
         modules = {m.name: m for m in load(env={"XDG_CONFIG_HOME": ""}, home=HOME)}
         git = modules["git"]
         self.assertEqual(git.target, HOME / ".config" / "git")
-        self.assertEqual(git.include, ("aliases", "ignore"))
+        self.assertEqual(git.include, ("aliases", "ignore", "config"))
         self.assertEqual(git.exclude, ())
+
+    def test_shipped_manifest_loads_without_warnings(self):
+        manifest = read(env={}, home=HOME)
+        self.assertEqual(manifest.warnings, [])
+        self.assertEqual(
+            [m.name for m in manifest.modules],
+            ["claude", "git", "ssh", "gnupg", "gradle", "pypi", "shell", "junie", "copilot", "codex",
+             "gemini"],
+        )
+
+    def test_shipped_secrets_modules(self):
+        modules = {m.name: m for m in load(env={}, home=HOME)}
+        self.assertEqual([n for n, m in modules.items() if m.secrets], ["ssh", "gnupg", "gradle", "pypi"])
+        ssh = modules["ssh"]
+        self.assertEqual((ssh.target, ssh.include), (HOME / ".ssh", ("*",)))
+        self.assertEqual(ssh.plain, ("config", "known_hosts", "*.pub"))
+        self.assertEqual(modules["gnupg"].target, HOME / ".gnupg")
+        self.assertEqual(load(env={"GNUPGHOME": "/g"}, home=HOME)[3].target, Path("/g"))
 
 
 if __name__ == "__main__":

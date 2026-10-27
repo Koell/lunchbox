@@ -129,6 +129,57 @@ class SecretTest(unittest.TestCase):
             with self.subTest(name):
                 self.assert_secret(line, value[:6] + "…")
 
+    def test_pgp_secret_key_block(self) -> None:
+        text = "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQVYBGW\n-----END PGP PRIVATE KEY BLOCK-----\n"
+        self.assertEqual(lines(secrets(text)), [1])
+        self.assertEqual(secrets("-----BEGIN PGP PUBLIC KEY BLOCK-----\n"), [])
+
+    def test_gnupg_key_files(self) -> None:
+        for line in (
+            "Key: (protected-key (ecc (curve Ed25519)(flags eddsa)(q #40AB#)",
+            "Key: (private-key (rsa (n #00C4#)(e #010001#)",
+            "(21:protected-private-key(3:rsa(1:n257:",
+            "(20:shadowed-private-key(3:rsa",
+        ):
+            with self.subTest(line):
+                self.assertEqual(lines(secrets(f"Created: 20261027T120000\n{line}\n")), [2])
+
+    def test_unquoted_pairs(self) -> None:
+        value = "q7" * 12
+        cases = {
+            "properties": f"artifactRegistryMavenSecret={value}",
+            "properties spaced": f"db.password = {value}",
+            "env": f"GITHUB_TOKEN={value}",
+            "env quoted": f'API_KEY="{value}"',
+            "export": f"export ANTHROPIC_API_KEY={value}",
+            "export quoted": f"export NPM_TOKEN='{value}'",
+            "trailing comment": f"SECRET_KEY={value}  # rotate yearly",
+            "yaml": f"  token: {value}",
+            "kube key data": f"    client-key-data: {value}",
+            "private key field": f"private_key: {value}",
+            "yaml list item": f"  - password: {value}",
+            "shell local": f"local token={value}",
+        }
+        for name, line in cases.items():
+            with self.subTest(name):
+                self.assert_secret(line, value[:6] + "…")
+
+    def test_unquoted_pairs_that_are_not_secrets(self) -> None:
+        text = "\n".join([
+            "GITHUB_TOKEN=${GITHUB_TOKEN}",
+            "export API_KEY=$(pass show anthropic)",
+            "token: $TOKEN_FROM_ENV",
+            "password_file=~/.config/app/password",
+            "db.password=/run/secrets/db-password",
+            "token_url: https://auth.example.com/oauth/token",
+            "API_KEY=short",
+            "secret: some words here not a value",
+            "artifactRegistryMavenUrl=https://europe-maven.pkg.dev/project/repo",
+            "client-certificate-data: " + "C" * 40,
+            "- password: ${DB_PASSWORD}",
+        ])
+        self.assertEqual(secrets(text), [])
+
     def test_one_finding_per_line(self) -> None:
         line = '"api_key": "' + "sk-ant-" + "b" * 40 + '", "token": "' + "c" * 30 + '"'
         self.assertEqual(lines(secrets(line)), [1])

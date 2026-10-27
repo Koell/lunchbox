@@ -137,8 +137,9 @@ A module meant to hold credentials, such as SSH or GPG keys, says so in the mani
 ```toml
 [modules.ssh]
 target = "~/.ssh"
-include = ["config", "id_*"]
+include = ["*"]
 secrets = true
+plain = ["config", "known_hosts", "*.pub"]
 ```
 
 - Its files skip the secret guard; the portability guard still applies.
@@ -149,6 +150,29 @@ secrets = true
   readable by others.
 - Every other module stays guarded even in an encrypted bento, so a token pasted into `CLAUDE.md`
   is still caught.
+
+`bento.toml` is public, so it never names a private file: no key names, nothing that reveals a
+naming scheme or an employer. A secrets module uses generic patterns, and which of the files it
+matches actually travel is decided by unticking in the GUI's Capture tab, stored in the bento's
+[selection](#the-stored-selection), inside the encrypted contents.
+
+### High-risk files
+
+Some files need more care than others, even inside a secrets module: an SSH `config` is harmless,
+the private key next to it is not. A file is **high-risk** when
+
+- its content holds a private key (PEM, OpenSSH, an exported GPG secret key, GnuPG's own key files)
+  or a credential the [guards](#guards) recognise, in any module; or
+- it belongs to a module with `secrets = true` and matches none of the module's `plain` patterns.
+
+`plain` lists the harmless files of a secrets module. It can only lower that default: a `plain`
+file whose content holds a key is still high-risk, so a forgotten pattern makes a file more
+protected, never less. `plain` in a module without `secrets = true` is a warning and is ignored.
+
+High-risk files are marked wherever they show: the CLI's reports end their lines in
+`(high risk: private key)` and count them on the bento line; the GUI colours them, never shows their
+diff (not even after **Show**), counts them in the bento bar, and asks before writing one, into the
+bento or onto the machine, even when that is all a run does. Nothing beyond that is blocked.
 
 ## Deploy overwrites without backup — run `status` first
 
@@ -202,8 +226,11 @@ Capture refuses to store a file that contains
 - this machine's home directory in any spelling (`C:\Users\me`, `C:\\Users\\me`, `C:/Users/me`,
   `/c/Users/me`, `/home/me`), because such configuration breaks on other machines — use `~` or an
   environment variable instead; or
-- something that looks like a credential: Anthropic, GitHub and AWS keys, private key blocks, and
-  `api_key` / `token` / `secret` / `password` fields with a long literal value. Modules with
+- something that looks like a credential: Anthropic, GitHub and AWS keys; private key blocks (PEM,
+  OpenSSH, exported GPG secret keys) and GnuPG's own key files; and fields named like `api_key`,
+  `token`, `secret`, `password` or `*-key-data` with a long literal value, whether written as JSON,
+  TOML, YAML, `.properties`/`.env` (`key=value`) or `export NAME=value` in a shell profile.
+  References such as `${VAR}` or `$(command)`, paths and placeholders don't count. Modules with
   [`secrets = true`](#secrets) are exempt from this one.
 
 Refused files are reported with file, line and reason; all other files are still captured, a refused
@@ -236,7 +263,9 @@ confirm first and keep the stored selection.
 
 **Two tabs, one per direction**, each a tree of modules, folders and files with a state per file.
 Unchanged files are hidden until **Show unchanged**; a module whose target directory doesn't exist
-on this machine is greyed out as `skipped`. **Refresh** reads the machine and the bento again.
+on this machine is greyed out as `skipped`. **Refresh** reads `bento.toml`, the machine and the
+bento again. [High-risk files](#high-risk-files) are coloured and marked `high risk`, and the bento
+bar counts them.
 
 - **Capture** (this machine → bento) shows the files `bento.toml` manages here, plus those only in
   the bento. A tick means "in the bento": ticks start from the [stored selection](#the-stored-selection),
@@ -252,6 +281,7 @@ on this machine is greyed out as `skipped`. **Refresh** reads the machine and th
 or updated file a unified diff in which `+` is always what the action writes: this machine's
 version in Capture, the bento's in Deploy. Binary files show both sizes instead, long diffs stop
 after 2,000 lines, and files of a module with `secrets = true` show their diff only after **Show**.
+A high-risk file never shows its diff, not even after Show: only whether it differs, and both sizes.
 
 **Guards:** a file the guards refuse stays ticked but is marked `refused`; its details list each
 finding with line and reason, highlighted in the diff. **Allow this file** captures it anyway in
@@ -260,8 +290,9 @@ after a capture and on Refresh. A module with secrets is refused as a whole whil
 
 **Confirmations:** a capture that only adds and updates files, and a deploy that only adds files,
 run directly. Capture asks first, listing them, when files leave the bento, something is refused,
-files are allowed despite findings, or the encryption changes; deploy asks before overwriting
-files, since it keeps no backup. The result panel at the bottom then shows what was written, the
+files are allowed despite findings, a high-risk file is written, or the encryption changes; deploy
+asks before overwriting files, since it keeps no backup, and before writing a high-risk file, even
+a new one. The result panel at the bottom then shows what was written, the
 backup kept, and any warnings, as the CLI would.
 
 **Nothing is written over a surprise:** capture refuses to write when the bento file changed on disk
@@ -289,10 +320,16 @@ exclude = ["skills/synced/**", "skills/.trash/**", "**/*.zip"]
   within one path segment, `**` across directories. Nothing outside these patterns is ever read or
   written, so runtime state, history, caches and credentials stay out.
 - New files under an included folder (a new skill, for example) are picked up automatically.
-- `secrets = true` marks a module that holds credentials (see [Secrets](#secrets)).
+- `secrets = true` marks a module that holds credentials (see [Secrets](#secrets)), and `plain`
+  lists its harmless files (see [High-risk files](#high-risk-files)).
 
 Adding a module needs no code: add a table and run `capture`. The manifest is public and holds
-patterns only; the files themselves only ever go into the bento.
+patterns only; the files themselves only ever go into the bento. The GUI reads `bento.toml` again
+on every **Refresh**; warnings go to its result panel (the CLI prints them on stderr), and a broken
+manifest keeps the last good one while Capture and Deploy wait until it is fixed.
+
+Deploy creates a module's target directory only when it has something to write there, so modules
+for tools a machine doesn't use leave no empty folders behind.
 
 ### `claude`
 
@@ -301,13 +338,19 @@ line script). Skills synced by claude.ai (`skills/synced/`), Claude Code's trash
 (`skills/.trash/`) and stray archives are excluded. When `CLAUDE_CONFIG_DIR` is set, the module
 targets that directory, as Claude Code does.
 
-Not managed: `~/.claude.json` (including MCP servers), `settings.local.json`, plugins, credentials
-and project-level `.claude/` folders.
+Not managed: `~/.claude.json` (Claude Code's own state, including user-scope MCP servers),
+`settings.local.json`, plugins, credentials and project-level `.claude/` folders. MCP servers are
+set up again on each machine: `claude mcp add` (or `claude mcp add-json`), or, for the JetBrains IDEs'
+own servers, from the IDE's MCP settings. Keep a note of them in `CLAUDE.md`, which travels.
 
 ### `git`
 
-Git aliases and global ignore rules, in `~/.config/git` (or `$XDG_CONFIG_HOME/git`): `aliases` and
-`ignore`. Git reads `ignore` on its own. `aliases` is a separate file that `~/.gitconfig` includes;
+Git aliases, global ignore rules and portable global settings, in `~/.config/git` (or
+`$XDG_CONFIG_HOME/git`): `aliases`, `ignore` and `config`. Git reads `ignore` and `config` on its
+own; `config` is read as global configuration in addition to `~/.gitconfig`, so identity
+(`user.name`, `user.email`) and preferences go there, with
+`git config --file ~/.config/git/config user.name '…'`, while per-machine settings (tool paths,
+`maintenance.repo`, credential helpers) stay in `~/.gitconfig`. `aliases` is a separate file that `~/.gitconfig` includes;
 set that up once on each machine:
 
 ```sh
@@ -322,6 +365,48 @@ alone. By hand, it is `git config --global --add include.path ~/.config/git/alia
 aliases to the shared file instead, by editing it or with
 `git config --file ~/.config/git/aliases alias.<name> '<command>'`.
 
+### `ssh`
+
+The top level of `~/.ssh`: `config`, `known_hosts` and key pairs; `agent/` and anything in
+subfolders stay out. A secrets module: everything except `config`, `known_hosts` and `*.pub` is
+high-risk, so a key added later is protected without being listed. To keep a key from travelling,
+untick it in the Capture tab. `config` must refer to keys as `~/.ssh/…`, or the portability guard
+refuses it. Check a deployed key with `ssh -T git@github.com`.
+
+### `gnupg`
+
+A GnuPG identity in `$GNUPGHOME`, by default `~/.gnupg`: private keys (`private-keys-v1.d`),
+revocation certificates, the public keyring in either format (`pubring.kbx`, or
+`public-keys.d/pubring.db` with keyboxd), the trust database and `gpg.conf`. Private keys and
+revocation certificates are high-risk. `gpg-agent.conf` and `common.conf` hold platform-specific
+paths and stay out. Gpg4win on Windows keeps its keyring in `%APPDATA%\gnupg`: set `GNUPGHOME` to
+that folder before capturing or deploying.
+
+After a deploy, a running agent doesn't see the new keys yet; restart it, then check:
+
+```sh
+gpgconf --kill all
+gpg -K
+```
+
+### `gradle`, `pypi`
+
+`~/.gradle/gradle.properties` and `~/.pypirc`, both secrets modules with every file high-risk: they
+usually hold repository and upload credentials.
+
+### `shell`
+
+Shell setup in the home folder, by exact name: `.zshrc`, `.zshenv`, `.zprofile`, `.bashrc`,
+`.bash_profile`, `.profile`, `.inputrc`. History files are never included. A token exported in one
+of them is refused by the guards; keep it in a separate file that isn't managed and source it.
+
+### `junie`, `copilot`, `codex`, `gemini`
+
+AI coding tools, settings and instructions only: Junie's `settings.json`; Copilot's
+`instructions/` and `prompts/`; Codex's `config.toml`, `AGENTS.md` and `prompts/` (in
+`$CODEX_HOME`, by default `~/.codex`); Gemini's `settings.json`, `GEMINI.md` and `commands/`.
+Logins (`auth.json`, OAuth credentials), sessions and logs stay out: log in again on each machine.
+
 ## Environments
 
 - **Windows, Linux, macOS** are all supported; the tool behaves the same everywhere.
@@ -333,9 +418,14 @@ aliases to the shared file instead, by editing it or with
 
 ## Not managed on purpose
 
-`~/.gitconfig` and `~/.config/git/config` stay out of the bento: identity, credential helpers and
-other per-machine values must not travel between machines. The `git` module manages only its own
-files next to them.
+`~/.gitconfig` stays out of the bento: credential helpers, tool paths and other per-machine values
+must not travel between machines. What should travel goes into `~/.config/git/config` (see
+[`git`](#git)).
+
+Credentials issued per device or expiring on their own also stay out: a kube config, Docker
+registry logins, Claude Code's `.credentials.json`, short-lived API tokens. Logging in again on the
+new machine is safer than a copy that goes stale or, with rotating refresh tokens, logs the other
+machine out.
 
 ## Development
 
@@ -355,4 +445,6 @@ The GUI keeps its logic in a Tk-free model (`bento/gui/model.py`: the tree, tick
 selection they become, confirmations, diffs), covered by plain unit tests. A Tk smoke test builds
 the window on a copy of the fixture machine and deploys, captures, encrypts and decrypts with
 temporary bentos. It needs a display: it runs on the Windows and macOS runners and under `xvfb-run`
-on Ubuntu, and is skipped locally without one.
+on Ubuntu, and is skipped locally without one. Which files are high-risk is decided in one place,
+`bento/risk.py`, shared by the CLI and the GUI and tested on its own. The CI smoke test captures and
+deploys only the fixture's modules (`claude git`); the others point at the runner's own home.

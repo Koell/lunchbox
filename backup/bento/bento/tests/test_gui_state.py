@@ -9,6 +9,7 @@ from unittest import mock
 
 from bento import gui
 from bento.gui.state import STATE_PATH, State, initial_bento
+from bento.manifest import Manifest
 
 PROJECT = Path(__file__).resolve().parents[2]
 
@@ -61,7 +62,7 @@ class RunTest(unittest.TestCase):
     def run_gui(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            code = gui.run([])
+            code = gui.run(lambda: Manifest([]))
         return code, err.getvalue()
 
     def test_without_tkinter_one_line_names_the_package(self):

@@ -9,9 +9,9 @@ import sys
 from collections.abc import Callable, Container, Mapping, Sequence
 from pathlib import Path
 
-from . import archive, guards, ops, picks, sync
+from . import archive, guards, ops, picks, risk, sync
 from .archive import Bento, BentoError
-from .manifest import ManifestError, Module, load
+from .manifest import ManifestError, Module, read
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
 MIN_PASSPHRASE = 4
@@ -29,11 +29,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream.reconfigure(errors="replace")
     args = _parser().parse_args(argv)
     try:
-        known = load()
+        manifest = read()
+        for warning in manifest.warnings:
+            print(f"bento: warning: {warning}", file=sys.stderr)
+        known = manifest.modules
         if args.command == "gui":
             from .gui import run  # imports tkinter, which the CLI must work without
 
-            return run(known, _bento_path(args.bento) if args.bento else None)
+            return run(read, _bento_path(args.bento) if args.bento else None)
         modules = _select(known, args.modules)
         path = _bento_path(args.bento)
         if args.command == "deploy":
@@ -70,11 +73,16 @@ def deploy(
     prompt: Prompt = getpass.getpass,
 ) -> int:
     contents = archive.read(path, _Passphrase(prompt, path))
-    _report_bento(path, contents, ops.unknown_modules(contents, known) if known is not None else [])
+    _report_bento(
+        path,
+        contents,
+        ops.unknown_modules(contents, known) if known is not None else [],
+        high_risk=risk.count(contents, modules if known is None else known),
+    )
     for item in ops.plan_deploy(contents, modules):
         module = item.module
         _report(f"deploy {module.name} -> {module.target}", item.plan, dry_run=dry_run,
-                ignored=item.ignored)
+                ignored=item.ignored, high_risk=item.high_risk)
         if not dry_run:
             ops.apply_deploy([item])
     return EXIT_OK
@@ -107,7 +115,13 @@ def capture(
         encrypt=encrypt,
         decrypt=decrypt,
     )
-    _report_bento(path, previous, plan.unknown, prune=plan.pruned)
+    _report_bento(
+        path,
+        previous,
+        plan.unknown,
+        prune=plan.pruned,
+        high_risk=risk.count(previous, modules if known is None else known) if previous else 0,
+    )
     for item in plan.modules:
         _report_capture(item, dry_run=dry_run)
     if plan.blocked:
@@ -138,13 +152,19 @@ def status(
 ) -> int:
     contents = ops.load(path, _Passphrase(prompt, path))
     unknown = ops.unknown_modules(contents, known) if contents is not None and known is not None else []
-    _report_bento(path, contents, unknown)
+    _report_bento(
+        path,
+        contents,
+        unknown,
+        high_risk=risk.count(contents, modules if known is None else known) if contents else 0,
+    )
     deploys = ops.plan_deploy(contents, modules) if contents is not None else [None] * len(modules)
     for module, item in zip(modules, deploys):
         if item is None:
             print(f"deploy {module.name} -> {module.target}\n  skipped: no bento")
         else:
-            _report(f"deploy {module.name} -> {module.target}", item.plan, ignored=item.ignored)
+            _report(f"deploy {module.name} -> {module.target}", item.plan, ignored=item.ignored,
+                    high_risk=item.high_risk)
         packed = contents.module(module.name) if contents is not None else {}
         selection = picks.stored(contents) if contents is not None else picks.Picks()
         _report_capture(
@@ -177,7 +197,12 @@ def _new_passphrase(prompt: Prompt) -> str:
 
 
 def _report_bento(
-    path: Path, contents: Bento | None, unknown: Sequence[str] = (), *, prune: bool = False
+    path: Path,
+    contents: Bento | None,
+    unknown: Sequence[str] = (),
+    *,
+    prune: bool = False,
+    high_risk: int = 0,
 ) -> None:
     if contents is None:
         print(f"bento {path}\n  not found")
@@ -187,7 +212,10 @@ def _report_bento(
         if contents.captured is None
         else f"captured {contents.captured:%Y-%m-%d %H:%M:%S} UTC"
     )
-    print(f"bento {path} ({when}{', encrypted' if contents.encrypted else ''})")
+    flags = (", encrypted" if contents.encrypted else "") + (
+        f", {high_risk} high-risk file{'s' * (high_risk != 1)}" if high_risk else ""
+    )
+    print(f"bento {path} ({when}{flags})")
     for warning in contents.warnings:
         print(f"  warning  {warning}")
     for name in unknown:
@@ -214,6 +242,7 @@ def _report_capture(item: ops.CaptureModule, *, dry_run: bool = False) -> None:
             removed=item.removed,
             only_in_bento=item.only_in_bento,
             excluded=len(item.excluded),
+            high_risk=item.high_risk,
         )
 
 
@@ -228,22 +257,26 @@ def _report(
     only_in_bento: Sequence[str] = (),
     ignored: Sequence[str] = (),
     excluded: int = 0,
+    high_risk: Mapping[str, str] | None = None,
 ) -> None:
+    def note(path: str) -> str:
+        return risk.suffix((high_risk or {}).get(path))
+
     print(header + (" (dry run)" if dry_run else ""))
     for path in plan.added:
-        print(f"  added    {path}")
+        print(f"  added    {path}{note(path)}")
     for path in plan.updated:
-        print(f"  updated  {path}")
+        print(f"  updated  {path}{note(path)}")
     for path in removed:
-        print(f"  removed  {path}")
+        print(f"  removed  {path}{note(path)}")
     for path, found in (findings or {}).items():
         label = "warning " if path in allowed else "refused "
         for finding in found:
             print(f"  {label} {path}:{finding.line}  {finding.kind}: {finding.excerpt}")
     for path in only_in_bento:
-        print(f"  only in bento  {path}")
+        print(f"  only in bento  {path}{note(path)}")
     for path in ignored:
-        print(f"  ignored  {path}  (in the bento, not managed by bento.toml)")
+        print(f"  ignored  {path}  (in the bento, not managed by bento.toml){note(path)}")
     if excluded:
         print(f"  excluded by selection: {excluded}")
     print(f"  {len(plan.unchanged)} unchanged")

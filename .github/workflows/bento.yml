@@ -87,17 +87,19 @@ jobs:
             if [ -e "$d" ]; then echo "::error::$d already exists"; exit 1; fi
           done
 
-          # Capture from the fixture machine; the targets of this step stay untouched.
+          # Capture from the fixture machine; the targets of this step stay untouched. Only the
+          # fixture's modules: the others point at the runner's own home (~/.ssh, ~/.gradle, ...).
+          modules="claude git"
           capture() {
             CLAUDE_CONFIG_DIR="$fixture/claude" XDG_CONFIG_HOME="$fixture/xdg" \
-              python -m bento capture "$@"
+              python -m bento capture $modules "$@"
           }
 
           capture --bento "$bento" || exit 1
           if [ ! -f "$bento" ]; then echo "::error::capture did not write $bento"; exit 1; fi
 
-          python -m bento status --bento "$bento"
-          python -m bento deploy --bento "$bento"
+          python -m bento status $modules --bento "$bento"
+          python -m bento deploy $modules --bento "$bento"
 
           for f in CLAUDE.md settings.json custom/statusline.sh skills/demo/SKILL.md; do
             if [ ! -f "$target/$f" ]; then echo "::error::$f was not deployed"; exit 1; fi
@@ -124,7 +126,7 @@ jobs:
             echo "::error::custom/statusline.sh is not executable"; exit 1
           fi
 
-          out="$(python -m bento deploy --bento "$bento")"
+          out="$(python -m bento deploy $modules --bento "$bento")"
           printf '%s\n' "$out"
           if printf '%s\n' "$out" | grep -Eq '^[[:space:]]+(added|updated)[[:space:]]'; then
             echo "::error::second deploy changed files"; exit 1
@@ -165,7 +167,7 @@ jobs:
             echo "::error::capture after the selection rewrote the bento again"; exit 1
           fi
 
-          python -m bento status --bento "$bento"
+          python -m bento status $modules --bento "$bento"
 
       - name: Smoke test (setup-git.ps1, PowerShell 7)
         if: runner.os == 'Windows'

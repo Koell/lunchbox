@@ -99,6 +99,30 @@ class OpsTest(MachineTestCase):
         self.assertTrue(plan.refused)
         self.assertEqual(self.packed(), {"claude/a.md": b"clean"})
 
+    def test_newly_recognised_secrets_are_refused_and_keep_the_previous_version(self):
+        archive.write(self.path, Bento({"claude/a.md": b"clean"}, T0))
+        for data in (b"export GITHUB_TOKEN=" + b"q7" * 12 + b"\n",
+                     b"-----BEGIN PGP PRIVATE KEY BLOCK-----\n"):
+            with self.subTest(data[:20]):
+                self.write(self.claude, "a.md", data)
+                plan = self.capture()
+                self.assertEqual(self.module_result(plan, self.claude).refused_files, ("a.md",))
+                self.assertEqual(self.packed(), {"claude/a.md": b"clean"})
+        self.capture(allowed=ops.ALL)
+        self.assertEqual(self.packed()["claude/a.md"], b"-----BEGIN PGP PRIVATE KEY BLOCK-----\n")
+
+    def test_plans_say_which_files_are_high_risk(self):
+        keys = Module("keys", self.dir / "here" / "keys", ("*",), (), True, ("*.pub",))
+        self.write(keys, "work", b"opaque")
+        self.write(keys, "work.pub", b"ssh-ed25519 AAAA")
+        self.write(self.claude, "a.md", b"clean")
+        contents = Bento({"keys/old": b"x", "keys/work.pub": b"ssh-ed25519 AAAA", "claude/a.md": SECRET})
+        planned = {d.module.name: d for d in ops.plan_deploy(contents, [self.claude, keys])}
+        self.assertEqual(planned["keys"].high_risk, {"old": "secrets module, not listed as plain"})
+        self.assertEqual(planned["claude"].high_risk, {"a.md": "secret value"})
+        captured = ops.capture_module(keys, contents.module("keys"))
+        self.assertEqual(set(captured.high_risk), {"old", "work"})
+
     def test_allowed_paths_pass_one_refused_file_and_keep_the_other_refused(self):
         self.write(self.claude, "a.md", SECRET)
         self.write(self.claude, "b.md", SECRET)
@@ -155,6 +179,13 @@ class OpsTest(MachineTestCase):
         self.assertFalse((fresh.target / "stray.txt").exists())
         again = ops.plan_deploy(archive.read(self.path), [fresh])
         self.assertEqual(again[0].plan.changes, ())
+
+    def test_deploy_creates_no_folder_for_a_module_with_nothing_to_write(self):
+        archive.write(self.path, Bento({"claude/CLAUDE.md": b"rules"}, T0))
+        fresh = [self.machine(m.name, m.include, root="fresh") for m in self.modules]
+        ops.apply_deploy(ops.plan_deploy(archive.read(self.path), fresh))
+        self.assertTrue(fresh[0].target.is_dir())
+        self.assertFalse(fresh[1].target.exists())
 
     def test_load_returns_none_without_a_bento(self):
         self.assertIsNone(ops.load(self.path))

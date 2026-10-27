@@ -1,6 +1,7 @@
 # What bento manages. The files themselves live in the bento (see README), never in the repository.
 # Nothing outside these patterns is ever read or written, so runtime state, history, caches and
-# credentials stay out.
+# per-device credentials stay out. This file is public: it uses generic patterns and never names a
+# private file; which files actually travel is the bento's stored selection, inside the bento.
 
 # Global Claude Code configuration.
 [modules.claude]
@@ -8,7 +9,65 @@ target = "${CLAUDE_CONFIG_DIR:-~/.claude}"
 include = ["CLAUDE.md", "settings.json", "skills/**", "custom/**"]
 exclude = ["skills/synced/**", "skills/.trash/**", "**/*.zip"]
 
-# Shared git aliases and global ignore rules. ~/.gitconfig, with identity and credentials, stays out.
+# Git: aliases, global ignore rules, and the portable global settings in config (identity,
+# preferences). ~/.gitconfig, with per-machine paths and tools, stays out.
 [modules.git]
 target = "${XDG_CONFIG_HOME:-~/.config}/git"
-include = ["aliases", "ignore"]
+include = ["aliases", "ignore", "config"]
+
+# SSH: client config, known hosts and key pairs (top level only, so agent sockets stay out).
+# Everything except the plain files below is high-risk: private keys, and any new key.
+[modules.ssh]
+target = "~/.ssh"
+include = ["*"]
+secrets = true
+plain = ["config", "known_hosts", "*.pub"]
+
+# GnuPG: private keys, revocation certificates, the public keyring (classic or keyboxd), trust and
+# gpg.conf. gpg-agent.conf and common.conf hold platform paths and stay out.
+[modules.gnupg]
+target = "${GNUPGHOME:-~/.gnupg}"
+include = [
+    "private-keys-v1.d/*.key",
+    "openpgp-revocs.d/*.rev",
+    "pubring.kbx",
+    "public-keys.d/pubring.db",
+    "trustdb.gpg",
+    "gpg.conf",
+]
+secrets = true
+plain = ["pubring.kbx", "public-keys.d/pubring.db", "trustdb.gpg", "gpg.conf"]
+
+# Gradle settings, which usually hold repository credentials.
+[modules.gradle]
+target = "~/.gradle"
+include = ["gradle.properties"]
+secrets = true
+
+# The PyPI upload token.
+[modules.pypi]
+target = "~"
+include = [".pypirc"]
+secrets = true
+
+# Shell setup: rc and profile files by exact name, never history.
+[modules.shell]
+target = "~"
+include = [".zshrc", ".zshenv", ".zprofile", ".bashrc", ".bash_profile", ".profile", ".inputrc"]
+
+# AI coding tools: settings and instructions only; logins, sessions and logs stay out.
+[modules.junie]
+target = "~/.junie"
+include = ["settings.json"]
+
+[modules.copilot]
+target = "~/.copilot"
+include = ["instructions/**", "prompts/**"]
+
+[modules.codex]
+target = "${CODEX_HOME:-~/.codex}"
+include = ["config.toml", "AGENTS.md", "prompts/**"]
+
+[modules.gemini]
+target = "~/.gemini"
+include = ["settings.json", "GEMINI.md", "commands/**"]

@@ -10,7 +10,7 @@ from unittest import mock
 
 from bento import archive, cli, gpg, picks
 from bento.archive import Bento, BentoError
-from bento.manifest import Module
+from bento.manifest import Manifest, Module
 from bento.picks import ModulePicks, Picks
 from bento.tests.test_archive import tar_bytes
 
@@ -117,6 +117,15 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, cli.EXIT_OK)
         self.assertIn("warning  settings.md:1", out)
         self.assertEqual(self.packed(), {"claude/settings.md": SECRET})
+
+    def test_a_forced_credential_is_marked_high_risk_everywhere(self):
+        self.write(self.claude, "settings.md", SECRET)
+        code, out = self.capture(force=True)
+        self.assertIn("  added    settings.md  (high risk: secret value)\n", out)
+        self.write(self.claude, "settings.md", b"clean now")
+        _, out = self.run_cli(cli.status, self.modules, self.path, known=self.modules)
+        self.assertRegex(out.splitlines()[0], r"\(captured [^)]*, 1 high-risk file\)$")
+        self.assertIn("  updated  settings.md  (high risk: secret value)\n", out)
 
     def test_capture_without_changes_writes_nothing(self):
         self.write(self.claude, "CLAUDE.md", b"rules")
@@ -256,6 +265,19 @@ class CliTest(unittest.TestCase):
             code = cli.main(["deploy", "--bento", str(self.path)])
         self.assertEqual(code, cli.EXIT_ERROR)
         self.assertIn("no bento at", err.getvalue())
+
+    def test_main_prints_manifest_warnings_and_carries_on(self):
+        manifest = Manifest([self.claude], ["module 'git': 'plain' only applies with secrets = true; ignored"])
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli, "read", return_value=manifest), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            code = cli.main(["status", "--bento", str(self.path)])
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertEqual(
+            err.getvalue(),
+            "bento: warning: module 'git': 'plain' only applies with secrets = true; ignored\n",
+        )
+        self.assertIn("capture claude", out.getvalue())
 
 
 def answers(*replies):
@@ -406,6 +428,21 @@ class EncryptionTest(unittest.TestCase):
         code, out = self.run_cli(cli.status, self.modules, self.path, prompt=answers("pw12"))
         self.assertEqual(code, cli.EXIT_OK)
         self.assertIn("encrypted", out.splitlines()[0])
+
+    def test_high_risk_files_are_marked_and_counted(self):
+        self.ssh = Module("ssh", self.ssh.target, ("*",), (), secrets=True, plain=("config", "*.pub"))
+        (self.ssh.target / "work-key").write_bytes(b"opaque")
+        (self.ssh.target / "work-key.pub").write_bytes(b"ssh-ed25519 AAAA\n")
+        modules = [self.claude, self.ssh]
+        code, out = self.capture(answers("pw12", "pw12"), modules, encrypt=True)
+        self.assertEqual(code, cli.EXIT_OK, out)
+        self.assertIn("  added    id_ed25519  (high risk: private key)\n", out)
+        self.assertIn("  added    work-key  (high risk: secrets module, not listed as plain)\n", out)
+        self.assertIn("  added    work-key.pub\n", out)
+        self.assertIn("  added    config\n", out)
+
+        code, out = self.run_cli(cli.status, modules, self.path, known=modules, prompt=answers("pw12"))
+        self.assertRegex(out.splitlines()[0], r", encrypted, 2 high-risk files\)$")
 
 
 if __name__ == "__main__":

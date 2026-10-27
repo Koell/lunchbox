@@ -6,7 +6,7 @@ import os
 import re
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 MANIFEST_PATH = Path(__file__).resolve().parent.parent / "bento.toml"
@@ -26,6 +26,15 @@ class Module:
     include: tuple[str, ...]
     exclude: tuple[str, ...]
     secrets: bool = False
+    plain: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Manifest:
+    """The modules, and the problems that don't stop loading, such as an ignored field."""
+
+    modules: list[Module]
+    warnings: list[str] = field(default_factory=list)
 
 
 def resolve_target(raw: str, env: Mapping[str, str], home: Path) -> Path:
@@ -42,6 +51,15 @@ def load(
     home: Path | None = None,
 ) -> list[Module]:
     """Load every module in the manifest at `path`; `env` and `home` default to the real ones."""
+    return read(path, env, home).modules
+
+
+def read(
+    path: Path = MANIFEST_PATH,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Manifest:
+    """Like `load`, with the warnings."""
     path = Path(path)
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -58,10 +76,14 @@ def load(
         raise ManifestError(f"{path.name}: needs at least one [modules.<name>] table")
     env = os.environ if env is None else env
     home = Path.home() if home is None else Path(home)
-    return [_module(name, table, env, home) for name, table in modules.items()]
+    warnings: list[str] = []
+    return Manifest([_module(name, table, env, home, warnings) for name, table in modules.items()],
+                    warnings)
 
 
-def _module(name: str, data: object, env: Mapping[str, str], home: Path) -> Module:
+def _module(
+    name: str, data: object, env: Mapping[str, str], home: Path, warnings: list[str]
+) -> Module:
     if not NAME.fullmatch(name):
         raise ManifestError(f"module '{name}': name may only use letters, digits, '-' and '_'")
     if not isinstance(data, dict):
@@ -74,10 +96,14 @@ def _module(name: str, data: object, env: Mapping[str, str], home: Path) -> Modu
     secrets = data.get("secrets", False)
     if not isinstance(secrets, bool):
         raise ManifestError(f"module '{name}': 'secrets' must be true or false")
-    unknown = sorted(set(data) - {"target", "include", "exclude", "secrets"})
+    plain = _patterns(name, data, "plain", required=False)
+    if plain and not secrets:
+        warnings.append(f"module '{name}': 'plain' only applies with secrets = true; ignored")
+        plain = ()
+    unknown = sorted(set(data) - {"target", "include", "exclude", "secrets", "plain"})
     if unknown:
         raise ManifestError(f"module '{name}': unknown field(s): {', '.join(unknown)}")
-    return Module(name, resolve_target(target, env, home), include, exclude, secrets)
+    return Module(name, resolve_target(target, env, home), include, exclude, secrets, plain)
 
 
 def _patterns(name: str, data: dict, key: str, *, required: bool) -> tuple[str, ...]:

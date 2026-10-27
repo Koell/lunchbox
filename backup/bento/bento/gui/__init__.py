@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable
 from pathlib import Path
 
-from ..manifest import Module
+from ..manifest import Manifest
 
 NO_TK = (
     "bento: error: the GUI needs tkinter, which this Python lacks"
@@ -15,8 +15,9 @@ NO_TK = (
 )
 
 
-def run(modules: Sequence[Module], requested: Path | None = None) -> int:
-    """Open the window and return the exit code once it is closed."""
+def run(manifest: Callable[[], Manifest], requested: Path | None = None) -> int:
+    """Open the window and return the exit code once it is closed; `manifest` reads
+    `bento.toml`, again on every Refresh."""
     try:
         import tkinter
     except ImportError:
@@ -34,6 +35,6 @@ def run(modules: Sequence[Module], requested: Path | None = None) -> int:
 
     from .app import App
 
-    App(root, modules, requested)
+    App(root, manifest, requested)
     root.mainloop()
     return 0
