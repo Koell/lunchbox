@@ -226,3 +226,7 @@ __marimo__/
 /backup/bento/export/
 # Per-machine GUI state, such as the last opened bento.
 /backup/bento/local/
+# omnifetch's ticked repositories, per machine.
+/git/omnifetch/local/
+# breakglass's project folder, run records and shortcut icon, per machine.
+/emergency/breakglass/local/

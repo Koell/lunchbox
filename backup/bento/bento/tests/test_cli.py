@@ -259,6 +259,45 @@ class CliTest(unittest.TestCase):
         self.assertEqual(cli._bento_path("b/x.tar.gz"), Path.cwd() / "b" / "x.tar.gz")
         self.assertEqual(cli._bento_path(str(self.path)), self.path)
 
+    def test_main_prints_the_help_without_a_command_or_with_help(self):
+        for argv, expected in (([], cli.EXIT_USAGE), (["help"], cli.EXIT_OK)):
+            code, out = self.run_cli(cli.main, argv)
+            self.assertEqual(code, expected, argv)
+            self.assertIn("deploy    copy configuration", out)
+
+    def test_main_help_with_a_command_prints_that_commands_help(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as exit:
+            cli.main(["help", "capture"])
+        self.assertEqual(exit.exception.code, 0)
+        self.assertIn("usage: bento capture", out.getvalue())
+
+    def test_main_accepts_a_unique_prefix_of_a_command(self):
+        for name in cli.COMMANDS[:-1]:
+            for argv in ([name[:2], "-h"], [f"-{name[0]}", "-h"], ["h", name[:2]], ["-h", name]):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+                    cli.main(argv)
+                self.assertIn(f"usage: bento {name}", out.getvalue(), argv)
+        code, out = self.run_cli(cli.main, ["he"])
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertIn("usage: bento [-h]", out)
+
+    def test_main_answers_a_bad_command_line_with_the_full_help(self):
+        for argv, usage in (
+            (["bogus"], "usage: bento [-h]"),
+            (["help", "bogus"], "usage: bento [-h]"),
+            (["deploy", "--bogus"], "usage: bento deploy"),
+            (["-x"], "usage: bento [-h]"),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as exit:
+                cli.main(argv)
+            self.assertEqual(exit.exception.code, cli.EXIT_USAGE, argv)
+            self.assertIn(usage, err.getvalue())
+            self.assertIn("options:", err.getvalue())
+            self.assertIn("error:", err.getvalue())
+
     def test_main_reports_a_missing_bento_as_an_error(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):

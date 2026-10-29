@@ -15,6 +15,7 @@ from .manifest import ManifestError, Module, read
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
 MIN_PASSPHRASE = 4
+COMMANDS = ("deploy", "capture", "status", "gui", "help")
 
 Prompt = Callable[[str], str]
 
@@ -23,11 +24,35 @@ class UsageError(Exception):
     pass
 
 
+class _Parser(argparse.ArgumentParser):
+    """Answers a malformed command line with the full help rather than the one-line usage."""
+
+    def error(self, message):
+        self.print_help(sys.stderr)
+        self.exit(EXIT_USAGE, f"\n{self.prog}: error: {message}\n")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and not argv[0].startswith("--"):  # `-c` and `c` both stand for `capture`
+        if (command := _expand(argv[0].removeprefix("-"))) in COMMANDS:
+            argv[0] = command
+    args, extra = parser.parse_known_args(argv)
+    if extra:  # reported by the command's own parser, so the help shown is that command's
+        getattr(args, "parser", parser).error(f"unrecognized arguments: {' '.join(extra)}")
+    if args.command is None:
+        parser.print_help()
+        return EXIT_USAGE
+    if args.command == "help":
+        topic = args.topic and _expand(args.topic)
+        if topic not in (None, "help"):
+            parser.parse_args([topic, "--help"])  # prints that command's help and exits
+        parser.print_help()
+        return EXIT_OK
     try:
         manifest = read()
         for warning in manifest.warnings:
@@ -302,17 +327,24 @@ def _bento_path(raw: str | None) -> Path:
     return path
 
 
+def _expand(word: str) -> str:
+    """The command `word` is a unique prefix of; otherwise `word`, for argparse to reject."""
+    matches = [name for name in COMMANDS if name.startswith(word)]
+    return matches[0] if len(matches) == 1 else word
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="bento", description="Deploy and capture personal configuration."
     )
-    commands = parser.add_subparsers(dest="command", required=True, metavar="command")
+    commands = parser.add_subparsers(dest="command", metavar="command")
     for name, help_text in (
         ("deploy", "copy configuration from the bento onto this machine"),
         ("capture", "merge this machine's configuration into the bento"),
         ("status", "show what deploy and capture would change; writes nothing"),
     ):
         command = commands.add_parser(name, help=help_text, description=help_text)
+        command.set_defaults(parser=command)
         command.add_argument("modules", nargs="*", metavar="module", help="default: all modules")
         command.add_argument(
             "--bento", metavar="PATH", help=f"the bento to use (default: {archive.DEFAULT_PATH})"
@@ -341,7 +373,12 @@ def _parser() -> argparse.ArgumentParser:
             )
     gui_help = "open the window to choose, capture and deploy"
     gui = commands.add_parser("gui", help=gui_help, description=gui_help)
+    gui.set_defaults(parser=gui)
     gui.add_argument(
         "--bento", metavar="PATH", help="the bento to open (default: the one opened last)"
     )
+    # no help= keeps `help` out of the command list; `-h` is the documented way
+    help_command = commands.add_parser("help")
+    help_command.set_defaults(parser=parser)
+    help_command.add_argument("topic", nargs="?")
     return parser

@@ -51,6 +51,10 @@ systems, `py -3` or `python` on Windows. An older Python stops with one line say
 | `python -m bento status`  | Show what deploy and capture would change.         |
 | `python -m bento gui`     | Open [the window](#the-gui).                       |
 
+A command can be shortened to any prefix that names only one command, with or without a leading
+dash: `python -m bento c`, `python -m bento -c` and `python -m bento cap` all run `capture`.
+`python -m bento help [command]` and `-h` print the help.
+
 All commands but `gui` take optional module names (none means all modules) and `--bento PATH` (see
 [The bento](#the-bento)). `deploy` and `capture` take `--dry-run` to report without writing.
 `capture` also takes `--force` (see [Guards](#guards)), `--prune` (see

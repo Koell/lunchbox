@@ -1,0 +1,53 @@
+name: omnifetch
+
+on:
+  push:
+    paths:
+      - "git/omnifetch/**"
+      - ".github/workflows/omnifetch.yml"
+  pull_request:
+    paths:
+      - "git/omnifetch/**"
+      - ".github/workflows/omnifetch.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: git/omnifetch
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The window tests need a display: Windows and macOS runners have one, Linux gets a
+      # virtual one. OMNIFETCH_GUI_TESTS=required turns a missing display into a failure, not a skip.
+      - name: Install a virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      # Everything runs against throwaway local repositories; nothing is fetched over the network.
+      - name: Unit tests
+        shell: bash
+        env:
+          OMNIFETCH_GUI_TESTS: required
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a python -m unittest -v
+          else
+            python -m unittest -v
+          fi
