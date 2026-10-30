@@ -17,14 +17,25 @@ from bento.archive import Bento
 from bento.gui.state import State
 from bento.manifest import Manifest, Module, read
 
+# One Tk for the whole module; each test's window is a Toplevel on it. Creating a Tk again after
+# destroying one crashes Tk on macOS (seen with Python 3.14), so this one is only destroyed at the end.
 try:
     import tkinter
 
-    tkinter.Tk().destroy()
-    DISPLAY = True
+    ROOT = tkinter.Tk()
+    ROOT.withdraw()
 except Exception:  # no tkinter, or no display
-    DISPLAY = False
+    ROOT = None
+DISPLAY = ROOT is not None
 REQUIRED = os.environ.get("BENTO_GUI_TESTS") == "required"
+
+
+def tearDownModule():
+    global ROOT
+    if ROOT is not None:
+        ROOT.destroy()
+        ROOT = None
+        gc.collect()
 
 T0 = datetime(2026, 10, 23, 14, 15, 2, tzinfo=timezone.utc)
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "machine"
@@ -67,7 +78,8 @@ class AppTest(unittest.TestCase):
         # Free this test's Tk objects on the main thread once it is done: collected later in a
         # worker thread, they call into Tk from there, which can stall that worker on Windows.
         self.addCleanup(gc.collect)
-        self.root = tk.Tk()
+        self.assertIsNotNone(ROOT, "no tkinter or no display")
+        self.root = tk.Toplevel(ROOT)
         self.root.withdraw()
         self.addCleanup(self.root.destroy)
 
@@ -100,6 +112,13 @@ class AppTest(unittest.TestCase):
                 self.fail("the window did not finish its background work")
             self.root.update()
             time.sleep(0.01)
+        self.root.update()
+
+    def select(self, tree, id):
+        """Select `id` as a click does. The selection event is sent right away: queued by
+        `selection_set`, it did not arrive within one update on macOS (seen with Python 3.14)."""
+        tree.view.selection_set(id)
+        tree.view.event_generate("<<TreeviewSelect>>")
         self.root.update()
 
     def result_text(self, app):
@@ -225,8 +244,7 @@ class AppTest(unittest.TestCase):
         app.deploy._render()
         self.assertIn(("git/aliases", "aliases", "unchanged"), app.deploy.rows())
 
-        app.deploy.view.selection_set("claude/CLAUDE.md")
-        self.root.update()
+        self.select(app.deploy, "claude/CLAUDE.md")
         shown = [w.cget("text") for w in app.deploy.info.winfo_children()]
         self.assertIn("updated", shown)
         self.assertIn("11 bytes", shown)
@@ -237,7 +255,7 @@ class AppTest(unittest.TestCase):
         app = self.app(self.path)
         self.settle(app)
         self.settle(app)
-        app.deploy.view.selection_set("claude/CLAUDE.md")
+        self.select(app.deploy, "claude/CLAUDE.md")
         old = archive.read(self.path)
         archive.write(self.path, Bento({**old.files, "claude/skills/x/SKILL.md": b"x"}, T0), old)
         app.refresh()
@@ -359,8 +377,7 @@ class AppTest(unittest.TestCase):
         self.settle(app)
         id = "claude/skills/demo/SKILL.md"
         self.assertEqual(app.capture.tree.state(id), "refused")
-        app.capture.view.selection_set(id)
-        self.root.update()
+        self.select(app.capture, id)
         self.assertTrue(app.capture.allow_button.grid_info())
         app.capture.allow.set(True)
         app.capture._allow_changed()

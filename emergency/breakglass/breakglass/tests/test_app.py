@@ -112,6 +112,15 @@ class AppTest(unittest.TestCase):
         self.assertEqual(app.check("."), "on")
         self.assertEqual(app.summary.get(), "2 of 3 repositories with unsaved work · 2 ticked")
 
+    def test_sash_is_placed_once_the_window_shows(self):
+        app = self.open()
+        time.sleep(0.2)  # a slow first start can show the window this late (seen on Manjaro)
+        self.root.update()
+        self.root.deiconify()
+        self.pump(lambda: app.panes.winfo_viewable() and app.panes.winfo_width() > 1)
+        self.root.update()
+        self.assertAlmostEqual(app.panes.sashpos(0) / app.panes.winfo_width(), 0.62, delta=0.01)
+
     def test_save_only_the_ticked_and_refresh_ticks_everything_again(self):
         app = self.open()
         app.toggle("ahead")

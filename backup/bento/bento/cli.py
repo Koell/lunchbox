@@ -1,5 +1,5 @@
 """Command line: `python -m bento {deploy,capture,status} [module ...] [--bento PATH]`, and
-`python -m bento gui` for the window."""
+`python -m bento [--bento PATH]` without a command for the window."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .manifest import ManifestError, Module, read
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
 MIN_PASSPHRASE = 4
-COMMANDS = ("deploy", "capture", "status", "gui", "help")
+COMMANDS = ("deploy", "capture", "status", "help")
 
 Prompt = Callable[[str], str]
 
@@ -44,9 +44,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args, extra = parser.parse_known_args(argv)
     if extra:  # reported by the command's own parser, so the help shown is that command's
         getattr(args, "parser", parser).error(f"unrecognized arguments: {' '.join(extra)}")
-    if args.command is None:
-        parser.print_help()
-        return EXIT_USAGE
+    if args.command is not None and args.window_bento is not None:
+        parser.error(f"--bento goes after the command: bento {args.command} --bento PATH")
     if args.command == "help":
         topic = args.topic and _expand(args.topic)
         if topic not in (None, "help"):
@@ -58,10 +57,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         for warning in manifest.warnings:
             print(f"bento: warning: {warning}", file=sys.stderr)
         known = manifest.modules
-        if args.command == "gui":
+        if args.command is None:
             from .gui import run  # imports tkinter, which the CLI must work without
 
-            return run(read, _bento_path(args.bento) if args.bento else None)
+            return run(read, _bento_path(args.window_bento) if args.window_bento else None)
         modules = _select(known, args.modules)
         path = _bento_path(args.bento)
         if args.command == "deploy":
@@ -335,7 +334,13 @@ def _expand(word: str) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = _Parser(
-        prog="bento", description="Deploy and capture personal configuration."
+        prog="bento",
+        description="Deploy and capture personal configuration. Without a command, open the window"
+        " to choose, capture and deploy.",
+    )
+    parser.add_argument(
+        "--bento", dest="window_bento", metavar="PATH",
+        help="without a command: the bento to open in the window (default: the one opened last)",
     )
     commands = parser.add_subparsers(dest="command", metavar="command")
     for name, help_text in (
@@ -371,12 +376,6 @@ def _parser() -> argparse.ArgumentParser:
             encryption.add_argument(
                 "--decrypt", action="store_true", help="store the bento unencrypted again"
             )
-    gui_help = "open the window to choose, capture and deploy"
-    gui = commands.add_parser("gui", help=gui_help, description=gui_help)
-    gui.set_defaults(parser=gui)
-    gui.add_argument(
-        "--bento", metavar="PATH", help="the bento to open (default: the one opened last)"
-    )
     # no help= keeps `help` out of the command list; `-h` is the documented way
     help_command = commands.add_parser("help")
     help_command.set_defaults(parser=parser)

@@ -134,7 +134,7 @@ class App:
         )
         self.save_button.grid(row=0, column=11)
 
-        panes = ttk.Panedwindow(frame, orient="horizontal")
+        self.panes = panes = ttk.Panedwindow(frame, orient="horizontal")
         panes.grid(row=2, column=0, sticky="nsew")
 
         left = ttk.Frame(panes, style=theme.SURFACE_FRAME)
@@ -182,8 +182,17 @@ class App:
         out.grid_remove()
         panes.add(self.details, weight=2)
         self.info.bind("<Configure>", lambda e: self._wrap())
-        # The tree asks for the width of all its columns; start with the details pane readable
-        self.root.after(100, lambda: panes.sashpos(0, int(panes.winfo_width() * 0.62)))
+        # The tree asks for the width of all its columns; start with the details pane readable.
+        # Only once the window is on screen: before that the panes' width is made up (1 on X11),
+        # and a sash placed then stays there, hiding the tree.
+        def place_sash(event: tk.Event) -> None:
+            if panes.winfo_viewable() and panes.winfo_width() > 1:
+                panes.sashpos(0, int(panes.winfo_width() * 0.62))
+                for widget, sequence, funcid in bound:
+                    widget.unbind(sequence, funcid)
+
+        bound = [(widget, sequence, widget.bind(sequence, place_sash, add="+"))
+                 for widget, sequence in ((panes, "<Configure>"), (self.root, "<Map>"))]
 
     # Project folder
 

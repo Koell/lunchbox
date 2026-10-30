@@ -1,4 +1,4 @@
-"""The GUI: `python -m bento gui`. tkinter is imported only here, so the CLI works without it."""
+"""The GUI: `python -m bento` without a command. tkinter is imported only here, so the CLI works without it."""
 
 from __future__ import annotations
 

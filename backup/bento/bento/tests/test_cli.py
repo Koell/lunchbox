@@ -259,11 +259,31 @@ class CliTest(unittest.TestCase):
         self.assertEqual(cli._bento_path("b/x.tar.gz"), Path.cwd() / "b" / "x.tar.gz")
         self.assertEqual(cli._bento_path(str(self.path)), self.path)
 
-    def test_main_prints_the_help_without_a_command_or_with_help(self):
-        for argv, expected in (([], cli.EXIT_USAGE), (["help"], cli.EXIT_OK)):
-            code, out = self.run_cli(cli.main, argv)
-            self.assertEqual(code, expected, argv)
-            self.assertIn("deploy    copy configuration", out)
+    def test_main_prints_the_help_with_help(self):
+        code, out = self.run_cli(cli.main, ["help"])
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertRegex(out, r"deploy +copy configuration")
+        self.assertIn("Without a command, open the window", out)
+
+    def test_main_opens_the_window_without_a_command(self):
+        for argv, requested in (([], None), (["--bento", str(self.path)], self.path)):
+            with mock.patch.object(cli, "read", return_value=Manifest([])) as read, \
+                    mock.patch("bento.gui.run", return_value=cli.EXIT_OK) as run:
+                self.assertEqual(cli.main(argv), cli.EXIT_OK)
+            run.assert_called_once_with(read, requested)
+
+    def test_main_refuses_the_window_bento_before_a_command(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as exit:
+            cli.main(["--bento", str(self.path), "deploy"])
+        self.assertEqual(exit.exception.code, cli.EXIT_USAGE)
+        self.assertIn("--bento goes after the command", err.getvalue())
+
+    def test_gui_is_no_longer_a_command(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            cli.main(["gui"])
+        self.assertIn("invalid choice: 'gui'", err.getvalue())
 
     def test_main_help_with_a_command_prints_that_commands_help(self):
         out = io.StringIO()

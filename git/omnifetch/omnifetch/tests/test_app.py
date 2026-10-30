@@ -110,6 +110,15 @@ class AppTest(unittest.TestCase):
         self.assertEqual(app.view.set("a", "branch"), "main")
         self.assertEqual(app.summary.get(), "3 repositories · 3 ticked")
 
+    def test_sash_is_placed_once_the_window_shows(self):
+        app = self.open()
+        time.sleep(0.2)  # a slow first start can show the window this late (seen on Manjaro)
+        self.root.update()
+        self.root.deiconify()
+        self.pump(lambda: app.panes.winfo_viewable() and app.panes.winfo_width() > 1)
+        self.root.update()
+        self.assertAlmostEqual(app.panes.sashpos(0) / app.panes.winfo_width(), 0.62, delta=0.01)
+
     def test_ticks_cascade_and_are_remembered(self):
         app = self.open()
         app.toggle("priv/b")

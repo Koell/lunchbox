@@ -49,13 +49,13 @@ systems, `py -3` or `python` on Windows. An older Python stops with one line say
 | `python -m bento deploy`  | Copy the bento's configuration onto this machine.  |
 | `python -m bento capture` | Merge this machine's configuration into the bento. |
 | `python -m bento status`  | Show what deploy and capture would change.         |
-| `python -m bento gui`     | Open [the window](#the-gui).                       |
+| `python -m bento`         | Open [the window](#the-gui).                       |
 
 A command can be shortened to any prefix that names only one command, with or without a leading
 dash: `python -m bento c`, `python -m bento -c` and `python -m bento cap` all run `capture`.
 `python -m bento help [command]` and `-h` print the help.
 
-All commands but `gui` take optional module names (none means all modules) and `--bento PATH` (see
+The commands take optional module names (none means all modules) and `--bento PATH` (see
 [The bento](#the-bento)). `deploy` and `capture` take `--dry-run` to report without writing.
 `capture` also takes `--force` (see [Guards](#guards)), `--prune` (see
 [Retiring files](#retiring-files)), and `--encrypt` or `--decrypt` (see [Encryption](#encryption)).
@@ -246,13 +246,13 @@ The guards are a safety net, not a guarantee: they miss credentials in formats t
 ## The GUI
 
 ```sh
-python -m bento gui                          # the bento opened last on this machine
-python -m bento gui --bento D:/bento.tar.gz  # a specific one
+python -m bento                          # the bento opened last on this machine
+python -m bento --bento D:/bento.tar.gz  # a specific one
 ```
 
-The window does what the commands do, with checkboxes instead of flags and a diff before anything is
-written. It needs Tk (see [Prerequisites](#prerequisites)); without it, or without a display (over
-SSH), `gui` says so in one line and the CLI keeps working.
+Without a command, bento opens the window. It does what the commands do, with checkboxes instead of
+flags and a diff before anything is written. It needs Tk (see [Prerequisites](#prerequisites));
+without it, or without a display (over SSH), bento says so in one line and the commands keep working.
 
 **The bento bar** shows the open bento's path, capture time and whether it is encrypted.
 **Open…** picks an existing bento, backups included, so you can deploy from an older capture;
